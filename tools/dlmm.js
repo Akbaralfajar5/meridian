@@ -548,13 +548,22 @@ export async function deployPosition({
     throw new Error("Invalid deploy amount: provide a positive amount_y/amount_sol.");
   }
   const isSingleSidedSol = finalAmountX <= 0 && finalAmountY > 0;
-  if (isSingleSidedSol && (Number(bins_above ?? 0) > 0 || Number(upside_pct ?? 0) > 0)) {
+  // Allow both directions: bins_below (SOL below = DCA-in) or bins_above (SOL above = sell pumps)
+  // But NOT both at once — pick one direction per deploy
+  if (isSingleSidedSol && Number(bins_above ?? 0) > 0 && Number(activeBinsBelow) > 0) {
     throw new Error(
-      "Single-side SOL deploy cannot use bins_above or upside_pct. Use amount_y with bins_below only; the upper bin is the SDK active bin.",
+      "Single-side SOL deploy: use bins_below (SOL below price = DCA-in) OR bins_above (SOL above = sell pumps), not both.",
     );
   }
-  if (isSingleSidedSol) {
-    activeBinsAbove = 0;
+  if (isSingleSidedSol && Number(bins_above ?? 0) <= 0 && Number(activeBinsBelow) <= 0) {
+    throw new Error(
+      "Single-side SOL deploy: must specify bins_below > 0 (SOL below) or bins_above > 0 (SOL above).",
+    );
+  }
+  if (isSingleSidedSol && activeBinsAbove > 0) {
+    activeBinsBelow = 0; // SOL above: clear bins_below
+  } else {
+    activeBinsAbove = 0; // SOL below: clear bins_above (default)
   }
   activeBinsBelow = Number(activeBinsBelow);
   activeBinsAbove = Number(activeBinsAbove);

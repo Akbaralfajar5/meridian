@@ -35,19 +35,13 @@ import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
 
-import { REPO_ROOT, repoPath } from "./repo-root.js";
-
 const entrypointPath = process.env.pm_exec_path || process.argv[1];
-const indexPath = fileURLToPath(import.meta.url);
-const isMain = process.env.pm_id != null
-  || (entrypointPath ? path.resolve(entrypointPath) === indexPath : false);
+const isMain = entrypointPath
+  ? path.resolve(entrypointPath) === fileURLToPath(import.meta.url)
+  : false;
 
 if (isMain) {
   log("startup", "DLMM LP Agent starting...");
-  log("startup", `Repo: ${REPO_ROOT} | cwd: ${process.cwd()}${process.env.pm_id ? ` | PM2 id: ${process.env.pm_id}` : ""}`);
-  if (path.resolve(process.cwd()) !== path.resolve(REPO_ROOT)) {
-    log("startup_warn", `process.cwd() differs from repo root — use "npm run pm2:start" (not "pm2 start index.js" from another directory)`);
-  }
   log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
   log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
   ensureAgentId();
@@ -214,7 +208,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
   try {
     if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
+      liveMessage = await createLiveMessage("🔄 Management", "Ngecek posisi...");
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
@@ -370,7 +364,7 @@ After executing, write a brief one-line result per position.
     if (!silent && telegramEnabled()) {
       if (mgmtReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
+        else sendMessage(`🔄 <b>Management</b>\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -429,7 +423,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return screenReport;
   }
   if (!silent && telegramEnabled()) {
-    liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
+    liveMessage = await createLiveMessage("🔍 Screening", "Nyari kandidat...");
   }
   timers.screeningLastRun = Date.now();
   log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
@@ -441,9 +435,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     // Load active strategy
     const activeStrategy = getActiveStrategy();
-    const deployStrategy = config.strategy.strategy;
-    const strategyBlock = `DEPLOY STRATEGY: ${deployStrategy} (from config) | bins_above: 0 (FIXED — never change) | deposit: SOL only (amount_y, amount_x=0)`
-      + (activeStrategy ? `\nSTRATEGY CONTEXT: ${activeStrategy.name} — entry: ${activeStrategy.entry?.condition || "n/a"} | exit: ${activeStrategy.exit?.notes || "n/a"} | best for: ${activeStrategy.best_for}` : "");
+    const strategyBlock = activeStrategy
+      ? `ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy} | bins_above: ${activeStrategy.range?.bins_above ?? 0} (FIXED — never change) | deposit: ${activeStrategy.entry?.single_side === "sol" ? "SOL only (amount_y, amount_x=0)" : "dual-sided"} | best for: ${activeStrategy.best_for}`
+      : `No active strategy — use default bid_ask, bins_above: 0, SOL only.`;
 
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
@@ -555,6 +549,25 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const netBuyers = ti?.stats_1h?.net_buyers;
       const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
 
+      // OKX signals
+      const okxParts = [
+        pool.risk_level     != null ? `risk=${pool.risk_level}`               : null,
+        pool.bundle_pct     != null ? `bundle=${pool.bundle_pct}%`            : null,
+        pool.sniper_pct     != null ? `sniper=${pool.sniper_pct}%`            : null,
+        pool.suspicious_pct != null ? `suspicious=${pool.suspicious_pct}%`    : null,
+        pool.new_wallet_pct != null ? `new_wallets=${pool.new_wallet_pct}%`   : null,
+        pool.is_rugpull != null ? `rugpull=${pool.is_rugpull ? "YES" : "NO"}` : null,
+        pool.is_wash != null ? `wash=${pool.is_wash ? "YES" : "NO"}` : null,
+      ].filter(Boolean).join(", ");
+      const okxUnavailable = !okxParts && pool.price_vs_ath_pct == null;
+
+      const okxTags = [
+        pool.smart_money_buy    ? "smart_money_buy"    : null,
+        pool.kol_in_clusters    ? "kol_in_clusters"    : null,
+        pool.dex_boost          ? "dex_boost"          : null,
+        pool.dex_screener_paid  ? "dex_screener_paid"  : null,
+        pool.dev_sold_all       ? "dev_sold_all(bullish)" : null,
+      ].filter(Boolean).join(", ");
       const pvpLine = pool.is_pvp
         ? `  pvp: HIGH — rival ${pool.pvp_rival_name || pool.pvp_symbol} (${pool.pvp_rival_mint?.slice(0, 8)}...) has pool ${pool.pvp_rival_pool?.slice(0, 8)}..., tvl=$${pool.pvp_rival_tvl}, holders=${pool.pvp_rival_holders}, fees=${pool.pvp_rival_fees}SOL`
         : null;
@@ -564,6 +577,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.tvl ?? pool.active_tvl}, volatility_${pool.volatility_timeframe || "30m"}=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
         `  audit: top10=${top10Pct}%, bots=${botPct}%, fees=${feesSol}SOL${launchpad ? `, launchpad=${launchpad}` : ""}`,
         pvpLine,
+        okxParts ? `  okx: ${okxParts}` : okxUnavailable ? `  okx: unavailable` : null,
+        okxTags  ? `  tags: ${okxTags}` : null,
+        pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
         `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
@@ -611,54 +627,49 @@ STEPS:
    For single-side SOL deploys, do not invent upside:
    set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
 4. Report in this exact format (no tables, no extra sections):
-   🚀 DEPLOYED
+   🚀 DEPLOY
 
-   <pool name>
-   <pool address>
+   <pool name>  |  <pool address dipotong 8 karakter>
 
-   ◎ <deploy amount> SOL | <strategy> | bin <active_bin>
-   Range: <minPrice> → <maxPrice>
-   Range cover: <downside %> downside | <upside %> upside | <total width %> total
+   ◎ <deploy amount> SOL  |  <strategy>  |  bin <active_bin>
+   📏 Range: <minPrice> → <maxPrice>
+   📐 Cover: <downside %> bawah | <upside %> atas | <total width %> total
 
-   IMPORTANT:
-   - Do NOT calculate the range percentages yourself.
-   - Use the actual deploy_position tool result:
-     range_coverage.downside_pct
-     range_coverage.upside_pct
-     range_coverage.width_pct
+   PENTING — Jangan hitung sendiri range cover. Pakai hasil deploy_position:
+     range_coverage.downside_pct / upside_pct / width_pct
 
-   MARKET
-   Fee/TVL: <x>%
-   Volume: $<x>
-   TVL: $<x>
-   Volatility: <x>
-   Organic: <x>
-   Mcap: $<x>
-   Age: <x>h
+   📊 PASAR
+   Fee/TVL: <x>%  |  Vol: $<x>  |  TVL: $<x>
+   Volatilitas: <x>  |  Organic: <x>  |  Mcap: $<x>  |  Umur: <x>j
 
-   AUDIT
-   Top10: <x>%
-   Bots: <x>%
-   Fees paid: <x> SOL
-   Smart wallets: <names or none>
+   🔎 AUDIT
+   Top10: <x>%  |  Bot: <x>%  |  Fee: <x> SOL
+   Smart wallet: <nama atau tidak ada>
 
-   WHY THIS WON
-   <2-4 concise sentences on why this pool won, key risks, and why it still beat the alternatives>
-5. If no pool qualifies, report in this exact format instead:
-   ⛔ NO DEPLOY
+   ⚠️ RISIKO
+   <Jika ada data OKX, tulis field yang ada: Bundle, Sniper, Suspicious, Rugpull, Wash, ATH distance.>
+   <Jika cuma rugpull/wash, tulis itu aja.>
+   <Jika OKX gak available, tulis: OKX: gak tersedia>
 
-   Cycle finished with no valid entry.
+   🏆 KENAPA MENANG
+   <2-4 kalimat singkat: knp pool ini dipilih, apa narasi & keunggulannya vs alternatif, dan risiko utama. PAKAI BAHASA INDONESIA.>
+5. Jika gak ada pool yang lolos, laporkan:
+   ⛔ GAK DEPLOY
 
-   BEST LOOKING CANDIDATE
-   <name or none>
+   Gak ada kandidat yang lolos siklus ini.
 
-   WHY SKIPPED
-   <2-4 concise sentences explaining why nothing was good enough>
+   KANDIDAT TERBAIK
+   <nama atau gak ada>
 
-   REJECTED
-   <short flat list of top candidate names and why they were skipped>
-IMPORTANT:
-- Keep the whole report compact and highly scannable for Telegram.
+   KENAPA GAK JADI
+   <2-4 kalimat singkat kenapa gak ada yang cukup baik. PAKAI BAHASA INDONESIA.>
+
+   YANG DITOLAK
+   <daftar singkat nama kandidat + alasan ditolak>
+PENTING:
+- OKX: jangan tulis "unknown" — pakai data asli, hapus field kosong, atau tulis "OKX: gak tersedia".
+- Laporan harus ringkas dan enak dibaca di Telegram.
+- Semua analisis naratif (KENAPA MENANG, KENAPA GAK JADI) WAJIB pakai Bahasa Indonesia.
       `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
         onToolStart: async ({ name }) => {
           if (name === "deploy_position") deployAttempted = true;
@@ -696,7 +707,7 @@ IMPORTANT:
     if (!silent && telegramEnabled()) {
       if (screenReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
+        else sendMessage(`🔍 <b>Screening</b>\n\n${stripThink(screenReport)}`).catch(() => { });
       }
     }
   }
@@ -1657,6 +1668,8 @@ function getLoneCandidateSkipReason({ pool, sw, n, ti } = {}) {
   const globalFeesSol = Number(tokenInfo.global_fees_sol ?? pool.gmgn_total_fee_sol);
   const top10Pct = Number(tokenInfo.audit?.top_holders_pct ?? pool.gmgn_token_info_top10_pct ?? pool.gmgn_top10_holder_pct);
   const botPct = Number(tokenInfo.audit?.bot_holders_pct ?? pool.gmgn_bot_degen_pct);
+  if (pool.is_wash) return "wash trading was flagged";
+  if (pool.is_rugpull && smartWalletCount === 0) return "rugpull risk was flagged and no smart wallets offset it";
   if (pool.is_pvp && smartWalletCount === 0) return "PVP symbol conflict and no smart-wallet confirmation";
   if (Number.isFinite(globalFeesSol) && globalFeesSol < config.screening.minTokenFeesSol) {
     return `token fees ${globalFeesSol} SOL below minimum ${config.screening.minTokenFeesSol} SOL`;
@@ -1875,6 +1888,7 @@ Commands:
       console.log(`  maxTvl:               ${s.maxTvl}`);
       console.log(`  minVolume:            ${s.minVolume}`);
       console.log(`  minTokenFeesSol:      ${s.minTokenFeesSol}`);
+      console.log(`  maxBundlePct:         ${s.maxBundlePct}`);
       console.log(`  maxBotHoldersPct:     ${s.maxBotHoldersPct}`);
       console.log(`  maxTop10Pct:          ${s.maxTop10Pct}`);
       console.log(`  timeframe:            ${s.timeframe}`);
@@ -1948,7 +1962,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
           return;
         }
         const fs = await import("fs");
-        const lessonsData = JSON.parse(fs.default.readFileSync(repoPath("lessons.json"), "utf8"));
+        const lessonsData = JSON.parse(fs.default.readFileSync("./lessons.json", "utf8"));
         const result = evolveThresholds(lessonsData.performance, config);
         if (!result || Object.keys(result.changes).length === 0) {
           console.log("\nNo threshold changes needed — current settings already match performance data.\n");

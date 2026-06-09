@@ -242,6 +242,18 @@ export function isBaseMintOnCooldown(baseMint) {
   );
 }
 
+/**
+ * Check if a base mint has ever been deployed before (any pool).
+ * Used by screening to deprioritize repeat tokens.
+ */
+export function hasBeenDeployedBefore(baseMint) {
+  if (!baseMint) return false;
+  const db = load();
+  return Object.values(db).some((entry) =>
+    entry?.base_mint === baseMint && entry?.total_deploys > 0
+  );
+}
+
 // ─── Read ──────────────────────────────────────────────────────
 
 /**

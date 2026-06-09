@@ -133,11 +133,14 @@ PRIORITY ORDER for strategy and bins:
 
 HARD RULES:
 - Never use 'curve'.
-- Bin Step: Only deploy in pools with bin_step between 80 and 125.
+- Bin Step: Only deploy in pools with bin_step between config.screening.minBinStep and config.screening.maxBinStep. Check actual config values at runtime — do NOT use any hardcoded defaults.
 - Volatility must be positive. If volatility is 0, null, or missing, do not deploy.
 - Range must cover at least 35 total bins. Never deploy 1-bin/tiny ranges.
-- For single-side SOL deploys (amount_y only, amount_x=0), do not request upside exposure:
-  use bins_below only, keep bins_above=0, and the upper bin will be pinned to the current active bin.
+- For single-side SOL deploys (amount_y only, amount_x=0):
+  • SOL BELOW price (bins_below > 0, bins_above = 0) → DCA-in: buy dips, earn fees when price drops
+  • SOL ABOVE price (bins_below = 0, bins_above > 0) → take-profit: sell into pumps, earn fees when price rises
+  For volatile meme tokens, prefer SOL ABOVE to capture pump fees and avoid bag-holding.
+  Never use both bins_below AND bins_above at once — pick one direction.
 
 Guidelines (only when user hasn't specified):
 - Strategy: omit the strategy field — the system will use the configured default from config.strategy.strategy
@@ -154,7 +157,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           amount_y: {
             type: "number",
-            description: "Amount of quote token (usually SOL) to deposit."
+            description: "Amount of quote token (SOL) to deposit. REQUIRED. Use deployAmountSol from config (currently 0.3 SOL). Always pass this parameter."
           },
           amount_x: {
             type: "number",
@@ -175,7 +178,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           bins_above: {
             type: "number",
-            description: "Number of bins above the current active bin. Keep this at 0 for single-side SOL deploys. Only use this for dual-sided or explicit upside-exposure deploys."
+            description: "Number of bins above the current active bin. For SOL ABOVE strategy (bins_below=0): upper bin = active bin + bins_above. For SOL BELOW (bins_above=0): keep at 0."
           },
           downside_pct: {
             type: "number",
@@ -183,7 +186,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           upside_pct: {
             type: "number",
-            description: "Optional human-friendly upside range in percent above the current active price. Do not use this for single-side SOL deploys."
+            description: "Optional human-friendly upside range in percent above the current active price. For SOL ABOVE strategy, use this instead of bins_above."
           },
           pool_name: { type: "string", description: "Human-readable pool name for record-keeping" },
           base_mint: { type: "string", description: "Base token mint address — used to prevent duplicate token exposure across pools" },
@@ -194,7 +197,7 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           organic_score: { type: "number", description: "Base token organic score at deploy time" },
           initial_value_usd: { type: "number", description: "Estimated USD value being deployed" }
         },
-        required: ["pool_address"]
+        required: ["pool_address", "amount_y"]
       }
     }
   },
@@ -539,7 +542,7 @@ is_pool=true means it's a liquidity pool address, not a real holder — filter t
 
 Also returns global_fees_sol — total priority/jito tips paid by ALL traders on this token (NOT Meteora LP fees).
 This is a key signal: low global_fees_sol means transactions are bundled or the token is a scam.
-HARD GATE: if global_fees_sol < config.screening.minTokenFeesSol (default 30), do NOT deploy.
+HARD GATE: if global_fees_sol < config.screening.minTokenFeesSol, do NOT deploy. Check the actual config value at runtime — do NOT use any hardcoded default.
 
 NOTE: Requires mint address. If you only have a symbol/name, call get_token_info first to resolve the mint.`,
       parameters: {

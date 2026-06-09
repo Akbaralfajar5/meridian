@@ -2,7 +2,7 @@ import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown, hasBeenDeployedBefore } from "../pool-memory.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
 
@@ -35,7 +35,13 @@ function scoreCandidate(pool) {
   const organic = Number(pool.organic_score || 0);
   const volume = Number(pool.volume_window || 0);
   const holders = Number(pool.holders || 0);
-  return feeTvl * 1000 + organic * 10 + volume / 100 + holders / 100;
+  let score = feeTvl * 1000 + organic * 10 + volume / 100 + holders / 100;
+  // Deprioritize tokens that have been deployed before — new tokens first
+  const baseMint = pool?.token_x?.address || pool?.base_mint || pool?.base?.mint;
+  if (baseMint && hasBeenDeployedBefore(baseMint)) {
+    score *= 0.1; // 90% penalty for repeat tokens — explore new tokens aggressively
+  }
+  return score;
 }
 
 function numeric(value) {
@@ -87,7 +93,6 @@ function getRawPoolScreeningRejectReason(pool, s) {
   const tvl = numeric(pool?.tvl ?? pool?.active_tvl);
   const feeActiveTvlRatio = numeric(pool?.fee_active_tvl_ratio);
   const volatility = numeric(pool?.volatility);
-  const volume = numeric(pool?.volume);
   const holders = numeric(pool?.base_token_holders);
   const mcap = numeric(base?.market_cap);
   const baseOrganic = numeric(base?.organic_score);
@@ -106,7 +111,11 @@ function getRawPoolScreeningRejectReason(pool, s) {
   if (mcap == null || mcap < s.minMcap) return `mcap ${mcap ?? "unknown"} below minMcap ${s.minMcap}`;
   if (mcap > s.maxMcap) return `mcap ${mcap} above maxMcap ${s.maxMcap}`;
   if (holders == null || holders < s.minHolders) return `holders ${holders ?? "unknown"} below minHolders ${s.minHolders}`;
-  if (volume == null || volume < s.minVolume) return `volume ${volume ?? "unknown"} below minVolume ${s.minVolume}`;
+  const volume24h = numeric(pool?.volume?.["24h"]);
+  if (volume24h != null && volume24h < s.minVolume) return `24h volume ${volume24h} below minVolume ${s.minVolume}`;
+  // Check 30m volume to filter dead pools (5m unavailable in listing API)
+  const volume30m = numeric(pool?.volume?.["30m"]);
+  if (volume30m != null && volume30m <= 0) return `30m volume is 0 — pool appears dead`;
   if (tvl == null || tvl < s.minTvl) return `TVL ${tvl ?? "unknown"} below minTvl ${s.minTvl}`;
   if (s.maxTvl != null && tvl > s.maxTvl) return `TVL ${tvl} above maxTvl ${s.maxTvl}`;
   if (binStep == null || binStep < s.minBinStep) return `bin_step ${binStep ?? "unknown"} below minBinStep ${s.minBinStep}`;
@@ -162,13 +171,25 @@ async function fetchPoolDiscoveryPage({ page_size, filters, timeframe, category 
     `&timeframe=${timeframe}` +
     `&category=${category}`;
 
-  const res = await fetch(url);
+  log("screening", `[FETCH] Pool discovery: ${url.slice(0, 120)}...`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
 
-  if (!res.ok) {
-    throw new Error(`Pool Discovery API error: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      throw new Error(`Pool Discovery API error: ${res.status} ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    log("screening", `[FETCH] Got ${data.data?.length || 0} pools`);
+    return data;
+  } catch (e) {
+    clearTimeout(timeout);
+    if (e.name === "AbortError") throw new Error("Pool Discovery API timeout (30s)");
+    throw e;
   }
-
-  return res.json();
 }
 
 async function fetchPoolDiscoveryDetail({ poolAddress, timeframe }) {

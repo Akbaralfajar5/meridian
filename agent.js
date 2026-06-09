@@ -93,11 +93,48 @@ import { getDecisionSummary } from "./decision-log.js";
 
 // Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
 // To use LM Studio: set LLM_BASE_URL=http://localhost:1234/v1 and LLM_API_KEY=lm-studio in .env
-const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
-  apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
-  timeout: 5 * 60 * 1000,
-});
+import { getCurrentKey, rotateKey, getKeyCount } from "./key-rotation.js";
+
+function getApiKey() {
+  // If we have rotation keys, use them; otherwise fall back to env
+  if (getKeyCount() > 0) return getCurrentKey();
+  return process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY;
+}
+
+function createClient() {
+  return new OpenAI({
+    baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
+    apiKey: getApiKey(),
+    timeout: 5 * 60 * 1000,
+    fetch: async (url, init) => {
+      const resp = await globalThis.fetch(url, {
+        ...init,
+        headers: {
+          ...init?.headers,
+          'Accept-Encoding': 'identity',
+        },
+      });
+      // Auto-rotate on 401/429 — only if we have multiple keys
+      if ((resp.status === 401 || resp.status === 429) && getKeyCount() > 1) {
+        const reason = resp.status === 401 ? "401" : "429";
+        const newKey = rotateKey(reason);
+        // Retry with new key
+        const retryInit = {
+          ...init,
+          headers: {
+            ...init?.headers,
+            'Accept-Encoding': 'identity',
+            'Authorization': `Bearer ${newKey}`,
+          },
+        };
+        return globalThis.fetch(url, retryInit);
+      }
+      return resp;
+    },
+  });
+}
+
+let client = createClient();
 
 const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
 
@@ -210,6 +247,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             tools: getToolsForRole(agentType, goal),
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+            stream: false,
           };
           if (!omitToolChoice) reqParams.tool_choice = toolChoice;
           response = await client.chat.completions.create(reqParams);
