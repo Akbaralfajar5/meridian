@@ -41,6 +41,15 @@ function scoreCandidate(pool) {
   if (baseMint && hasBeenDeployedBefore(baseMint)) {
     score *= 0.1; // 90% penalty for repeat tokens — explore new tokens aggressively
   }
+  // Boost fresh tokens — younger tokens get higher score
+  const createdAt = pool?.token_x?.created_at || pool?.created_at;
+  if (createdAt) {
+    const ageHours = (Date.now() - createdAt) / 3_600_000;
+    if (ageHours < 6) score *= 2.5;       // < 6h: 2.5x boost
+    else if (ageHours < 24) score *= 2.0;  // < 24h: 2x boost
+    else if (ageHours < 72) score *= 1.5;  // < 72h: 1.5x boost
+    else if (ageHours > 168) score *= 0.5; // > 7 days: 50% penalty
+  }
   return score;
 }
 
@@ -92,6 +101,7 @@ function getRawPoolScreeningRejectReason(pool, s) {
   const binStep = numeric(pool?.dlmm_params?.bin_step);
   const tvl = numeric(pool?.tvl ?? pool?.active_tvl);
   const feeActiveTvlRatio = numeric(pool?.fee_active_tvl_ratio);
+  const feeTvlRatio = numeric(pool?.fee_tvl_ratio);
   const volatility = numeric(pool?.volatility);
   const holders = numeric(pool?.base_token_holders);
   const mcap = numeric(base?.market_cap);
@@ -122,6 +132,9 @@ function getRawPoolScreeningRejectReason(pool, s) {
   if (binStep > s.maxBinStep) return `bin_step ${binStep} above maxBinStep ${s.maxBinStep}`;
   if (feeActiveTvlRatio == null || feeActiveTvlRatio < s.minFeeActiveTvlRatio) {
     return `fee/active-TVL ${feeActiveTvlRatio ?? "unknown"} below minFeeActiveTvlRatio ${s.minFeeActiveTvlRatio}`;
+  }
+  if (s.minFeePerTvl24h > 0 && feeTvlRatio != null && feeTvlRatio < s.minFeePerTvl24h) {
+    return `24h fee/TVL ${(feeTvlRatio * 100).toFixed(2)}% below minFeePerTvl24h ${(s.minFeePerTvl24h * 100).toFixed(0)}%`;
   }
   if (!isUsableVolatility(volatility)) {
     return `volatility ${volatility ?? "unknown"} is unusable`;
@@ -378,7 +391,7 @@ async function enrichPvpRisk(pools) {
  */
 async function refreshDiscordOnlyPools(pools, timeframe) {
   if (!pools.length) return;
-  const FIELDS = ["volume", "fee", "active_tvl", "tvl", "volatility", "fee_active_tvl_ratio"];
+  const FIELDS = ["volume", "fee", "active_tvl", "tvl", "volatility", "fee_active_tvl_ratio", "fee_tvl_ratio"];
   const results = await Promise.allSettled(
     pools.map((pool) =>
       fetchPoolDiscoveryDetail({ poolAddress: pool.pool_address, timeframe })
@@ -419,6 +432,7 @@ export async function discoverPools({
     `dlmm_bin_step>=${s.minBinStep}`,
     `dlmm_bin_step<=${s.maxBinStep}`,
     `fee_active_tvl_ratio>=${s.minFeeActiveTvlRatio}`,
+    s.minFeePerTvl24h > 0 ? `fee_tvl_ratio>=${s.minFeePerTvl24h}` : null,
     `base_token_organic_score>=${s.minOrganic}`,
     `quote_token_organic_score>=${s.minQuoteOrganic}`,
     s.minTokenAgeHours != null ? `base_token_created_at<=${Date.now() - s.minTokenAgeHours * 3_600_000}` : null,

@@ -473,7 +473,7 @@ export async function deployPosition({
   entry_holders,
 }) {
   pool_address = normalizeMint(pool_address);
-  const activeStrategy = strategy || config.strategy.strategy;
+  const activeStrategy = config.strategy.strategy; // Force config strategy — ignore LLM override
   let activeBinsBelow = bins_below ?? config.strategy.defaultBinsBelow ?? config.strategy.minBinsBelow;
   let activeBinsAbove = bins_above ?? 0;
   const parsedVolatility = volatility == null ? null : Number(volatility);

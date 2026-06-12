@@ -249,6 +249,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
             stream: false,
           };
+          // Disable DeepSeek thinking mode (eats tokens, breaks tool calls)
+          if (/deepseek/i.test(usedModel)) reqParams.thinking = { type: "disabled" };
           if (!omitToolChoice) reqParams.tool_choice = toolChoice;
           response = await client.chat.completions.create(reqParams);
         } catch (error) {

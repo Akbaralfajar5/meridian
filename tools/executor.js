@@ -67,6 +67,10 @@ function poolDetailFeeActiveTvlRatio(pool) {
   return numberOrNull(pool?.fee_active_tvl_ratio);
 }
 
+function poolDetailFeeTvlRatio(pool) {
+  return numberOrNull(pool?.fee_tvl_ratio);
+}
+
 function poolDetailVolatility(pool) {
   return numberOrNull(pool?.volatility);
 }
@@ -120,11 +124,29 @@ async function validateDeployPoolThresholds(args) {
   if (
     minFeeActiveTvlRatio != null &&
     minFeeActiveTvlRatio > 0 &&
-    (feeActiveTvlRatio == null || feeActiveTvlRatio < minFeeActiveTvlRatio)
+    feeActiveTvlRatio != null &&
+    feeActiveTvlRatio > 0 &&
+    feeActiveTvlRatio < minFeeActiveTvlRatio
   ) {
     return {
       pass: false,
-      reason: `Pool fee/active-TVL ${feeActiveTvlRatio ?? "unknown"}% is below configured minFeeActiveTvlRatio ${minFeeActiveTvlRatio}%.`,
+      reason: `Pool fee/active-TVL ${feeActiveTvlRatio}% is below configured minFeeActiveTvlRatio ${minFeeActiveTvlRatio}%.`,
+    };
+  }
+
+  // ── fee_per_tvl_24h check (actual 24h yield) ──
+  const feeTvlRatio = poolDetailFeeTvlRatio(detail);
+  const minFeePerTvl24h = numberOrNull(config.screening.minFeePerTvl24h);
+  if (
+    minFeePerTvl24h != null &&
+    minFeePerTvl24h > 0 &&
+    feeTvlRatio != null &&
+    feeTvlRatio >= 0 &&
+    feeTvlRatio < minFeePerTvl24h
+  ) {
+    return {
+      pass: false,
+      reason: `Pool 24h fee/TVL ${(feeTvlRatio * 100).toFixed(2)}% is below configured minFeePerTvl24h ${(minFeePerTvl24h * 100).toFixed(0)}%.`,
     };
   }
 

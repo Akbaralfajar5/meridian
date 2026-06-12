@@ -444,6 +444,16 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   // ── Out of range too long ──────────────────────────────────────
   if (pos.out_of_range_since) {
     const minutesOOR = Math.floor((Date.now() - new Date(pos.out_of_range_since).getTime()) / 60000);
+
+    // OOR PnL floor — exit immediately if PnL drops below threshold while OOR
+    const oorPnlFloor = mgmtConfig.oorPnlFloor ?? -15;
+    if (!pnl_pct_suspicious && currentPnlPct != null && currentPnlPct <= oorPnlFloor) {
+      return {
+        action: "OUT_OF_RANGE",
+        reason: `OOR PnL floor hit: ${currentPnlPct.toFixed(2)}% <= ${oorPnlFloor}% (OOR ${minutesOOR}m)`,
+      };
+    }
+
     if (minutesOOR >= mgmtConfig.outOfRangeWaitMinutes) {
       return {
         action: "OUT_OF_RANGE",
